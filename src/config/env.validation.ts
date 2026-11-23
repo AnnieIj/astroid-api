@@ -182,6 +182,12 @@ export const walletReconciliationEnvSchema = z.object({
   WALLET_BALANCE_DRIFT_THRESHOLD: z.coerce.number().nonnegative().max(1_000_000_000).default(0.0000001),
 });
 
+export const approvalEnvSchema = z.object({
+  APPROVAL_TTL_HOURS: z.coerce.number().int().positive().default(72),
+  APPROVAL_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  APPROVAL_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
@@ -221,6 +227,22 @@ export const webhookEnvSchema = z.object({
   WEBHOOK_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).max(100).default(5),
   // How long the circuit stays open before a probe delivery is allowed (ms).
   WEBHOOK_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
+});
+
+export const budgetRolloverEnvSchema = z.object({
+  // Enables the repeatable budget period rollover job at boot.
+  BUDGET_ROLLOVER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Cadence of the repeatable BullMQ job (minutes). Every tick only touches
+  // budgets whose period end is already in the past.
+  BUDGET_ROLLOVER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1_440).default(1),
+  // Budgets loaded per page. Pages are processed one at a time so a large
+  // number of budgets never occupies more than this many rows in memory.
+  BUDGET_ROLLOVER_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  // Upper bound on pages per run; the next scheduled tick picks up the rest.
+  BUDGET_ROLLOVER_MAX_BATCHES: z.coerce.number().int().min(1).max(1_000).default(20),
 });
 
 export const budgetAlertEnvSchema = z.object({
@@ -370,8 +392,10 @@ export const environmentSchema = z
     ...queueEnvSchema.shape,
     ...idempotencyEnvSchema.shape,
     ...walletReconciliationEnvSchema.shape,
+    ...approvalEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...budgetAlertEnvSchema.shape,
+    ...budgetRolloverEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
     ...metricsEnvSchema.shape,

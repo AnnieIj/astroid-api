@@ -107,6 +107,20 @@ enum BudgetPeriod {
   YEARLY
 }
 
+// Carry-over applied when a budget period is closed by the scheduled rollover.
+// NONE is the default so existing budgets keep their reset-to-zero behaviour.
+enum BudgetCarryOverRule {
+  NONE
+  UNUSED
+  OVERSPEND
+  NET
+}
+
+enum BudgetPeriodStatus {
+  OPEN
+  CLOSED
+}
+
 enum TransactionStatus {
   DRAFT
   PENDING
@@ -200,6 +214,7 @@ model Organization {
   wallets              Wallet[]
   policies             Policy[]
   budgets              Budget[]
+  budgetPeriodRecords  BudgetPeriodRecord[]
   transactions         Transaction[]
   auditLogs            AuditLog[]
   apiKeys              ApiKey[]
@@ -374,6 +389,16 @@ model Budget {
   spent          Decimal      @default(0) @db.Decimal(30, 7)
   period         BudgetPeriod @default(MONTHLY)
   periodStart    DateTime     @default(now())
+  // End of the current fixed period; null for ONE_TIME budgets.
+  periodEnd      DateTime?
+  // Immutable first period anchor: month-end clamping is always relative to it.
+  periodAnchor   DateTime?
+  // Number of completed periods since periodAnchor.
+  periodIndex    Int          @default(0)
+  // IANA timezone used for period boundaries (e.g. Africa/Lagos).
+  timezone       String       @default("UTC")
+  // Amount transferred into the next period when one elapses.
+  carryOverRule  BudgetCarryOverRule @default(NONE)
   rollover       Boolean      @default(false)
   enabled        Boolean      @default(true)
   // Per-budget override of the percentage thresholds that emit budget alerts.
@@ -389,12 +414,79 @@ model Budget {
   agent        Agent?        @relation(fields: [agentId], references: [id])
   transactions Transaction[]
   budgetAlerts BudgetAlert[]
+  periodRecords BudgetPeriodRecord[]
+  reservations BudgetReservation[]
 
   @@index([organizationId])
   @@index([parentBudgetId])
   @@index([agentId])
   @@index([organizationId, createdAt])
   @@map("budgets")
+}
+
+// Immutable history of a budget's fixed periods. The unique (budgetId,
+// periodStart) key makes the scheduled rollover idempotent, while the CLOSED
+// rows keep the final spend snapshot needed for audits and carry-over.
+model BudgetPeriodRecord {
+  id             String              @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         BudgetPeriodStatus  @default(OPEN)
+  // Spend captured when the period was closed; null while still open.
+  finalSpent     Decimal?            @db.Decimal(30, 7)
+  // Amount carried into this period by its opening rollover.
+  openingBalance Decimal             @default(0) @db.Decimal(30, 7)
+  carryOverRule  BudgetCarryOverRule @default(NONE)
+  closedAt       DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  budget       Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetId, periodStart])
+  @@index([organizationId, periodEnd])
+  @@index([status, periodEnd])
+  @@map("budget_periods")
+}
+
+// ---------------------------------------------------------------------------
+// 7. Transaction
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 6b. Budget reservation
+// ---------------------------------------------------------------------------
+
+// Lifecycle of an atomic budget reservation.
+enum ReservationStatus {
+  PENDING   // Amount is held; transaction not yet settled.
+  SETTLED   // Transaction completed; spent adjusted to actual amount.
+  RELEASED  // Transaction failed or cancelled; held amount returned.
+}
+
+// An atomic hold on a portion of a budget's remaining balance. The reservation
+// is created before the transaction executes, so concurrent requests cannot
+// both observe the same remaining headroom. Settlement adjusts the held amount
+// to the actual amount; release returns it in full.
+model BudgetReservation {
+  id             String            @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  amount         Decimal           @db.Decimal(30, 7)
+  settledAmount  Decimal?          @db.Decimal(30, 7)
+  status         ReservationStatus @default(PENDING)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  budget       Budget        @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([budgetId, status])
+  @@index([organizationId, createdAt])
+  @@map("budget_reservations")
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +500,8 @@ model Transaction {
   agentId           String?
   policyId          String?
   budgetId          String?
+  // Tracks the atomic budget reservation that guarded this transaction.
+  budgetReservationId String?
   asset             String            @default("XLM")
   amount            Decimal           @db.Decimal(30, 7)
   senderAddress     String?
@@ -431,6 +525,7 @@ model Transaction {
   agent         Agent?         @relation(fields: [agentId], references: [id])
   policy        Policy?        @relation(fields: [policyId], references: [id])
   budget        Budget?        @relation(fields: [budgetId], references: [id])
+  budgetReservation BudgetReservation? @relation(fields: [budgetReservationId], references: [id])
   proposal      Proposal?
   memoryRecords MemoryRecord[]
 
@@ -559,6 +654,7 @@ model Proposal {
   @@index([createdAt])
   @@index([organizationId, createdAt])
   @@index([organizationId, status, createdAt])
+  @@index([status, expiresAt])
   @@map("proposals")
 }
 
@@ -572,6 +668,7 @@ model Approval {
   userId     String
   decision   ApprovalDecision
   comment    String?
+  expiresAt  DateTime?
   createdAt  DateTime         @default(now())
 
   proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
@@ -580,6 +677,7 @@ model Approval {
   @@index([proposalId])
   @@index([userId])
   @@index([createdAt])
+  @@index([expiresAt])
   @@unique([proposalId, userId])
   @@map("approvals")
 }
@@ -621,6 +719,7 @@ model AuditLog {
   @@index([organizationId, entity, entityId, createdAt, id])
   @@index([organizationId, userId, createdAt, id])
   @@index([organizationId, action, createdAt, id])
+  @@index([organizationId, entity, createdAt, id])
   @@index([requestId])
   @@map("audit_logs")
 }

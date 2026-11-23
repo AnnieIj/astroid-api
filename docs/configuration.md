@@ -173,6 +173,14 @@ are rejected:
 See [`docs/wallet-reconciliation.md`](wallet-reconciliation.md) for the worker,
 queue and event behaviour.
 
+### Approval Expiry & Sweep
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `APPROVAL_TTL_HOURS` | `72` | Default lifetime in hours for approval requests before automatic expiration. |
+| `APPROVAL_SWEEP_INTERVAL_MS` | `60000` | Fixed interval in milliseconds between background sweep jobs (default: 1 minute). |
+| `APPROVAL_SWEEP_BATCH_SIZE` | `100` | Maximum number of expired pending proposals processed per batch during a sweep. |
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |
@@ -271,6 +279,10 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` overrides this list. |
+| `BUDGET_ROLLOVER_ENABLED` | `true` | Register the repeatable budget period rollover job at boot. |
+| `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
+| `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
+| `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
 
 ### Metrics
 
